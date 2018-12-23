@@ -15,6 +15,9 @@ var ECPair = require('./ecpair')
 var ECSignature = require('./ecsignature')
 var Transaction = require('./transaction')
 
+TransactionBuilder.OVERWINTERED_FLAG = 1
+TransactionBuilder.SAPLINGED_FLAG = 2
+
 function supportedType (type) {
   return SIGNABLE.indexOf(type) !== -1
 }
@@ -482,6 +485,12 @@ function TransactionBuilder (network, maximumFeeRate) {
   }
 }
 
+TransactionBuilder.prototype.setValueBalance = function (valueBalance) {
+  typeforce(types.Satoshi, valueBalance)
+
+  this.tx.valueBalance = valueBalance
+}
+
 TransactionBuilder.prototype.setExpiry = function (expiry) {
   typeforce(types.UInt32, expiry)
 
@@ -491,7 +500,7 @@ TransactionBuilder.prototype.setExpiry = function (expiry) {
 TransactionBuilder.prototype.setVersionGroupId = function (versiongroupid) {
   typeforce(types.UInt32, versiongroupid)
 
-  this.tx.versiongroupid = versiongroupid
+  this.tx.versionGroupId = versiongroupid
 }
 
 TransactionBuilder.prototype.setLockTime = function (locktime) {
@@ -524,8 +533,12 @@ TransactionBuilder.fromTransaction = function (transaction, network) {
   txb.setVersion(transaction.version)
   txb.setLockTime(transaction.locktime)
   if (version >= 3) {
-    txb.setVersionGroupId(transaction.versiongroupid)
+    txb.setVersionGroupId(transaction.versionGroupId)
     txb.setExpiry(transaction.expiry)
+  }
+
+  if (version >= 4) {
+    txb.setValueBalance(transaction.valueBalance)
   }
 
   // Copy outputs (done first to avoid signature invalidation)
@@ -690,11 +703,16 @@ function canSign (input) {
     )
 }
 
-TransactionBuilder.prototype.sign = function (vin, keyPair, redeemScript, hashType, witnessValue, witnessScript, overwintered) {
+TransactionBuilder.prototype.sign = function (vin, keyPair, redeemScript, hashType, witnessValue, witnessScript, networkflg) {
   // TODO: remove keyPair.network matching in 4.0.0
   if (keyPair.network && keyPair.network !== this.network) throw new TypeError('Inconsistent network')
   if (!this.inputs[vin]) throw new Error('No input at index: ' + vin)
   hashType = hashType || Transaction.SIGHASH_ALL
+
+  // for backward compatibility of 'overwintered' argument
+  if (typeof networkflg === 'boolean') {
+    networkflg = networkflg ? 1 : 0
+  }
 
   var input = this.inputs[vin]
 
@@ -721,7 +739,9 @@ TransactionBuilder.prototype.sign = function (vin, keyPair, redeemScript, hashTy
   var signatureHash
   if (input.witness) {
     signatureHash = this.tx.hashForWitnessV0(vin, input.signScript, input.value, hashType)
-  } else if (overwintered) {
+  } else if (networkflg >= TransactionBuilder.SAPLINGED_FLAG) {
+    signatureHash = this.tx.hashForZIP243(vin, input.signScript, witnessValue, hashType)
+  } else if (networkflg >= TransactionBuilder.OVERWINTERED_FLAG) {
     signatureHash = this.tx.hashForZIP143(vin, input.signScript, witnessValue, hashType)
   } else {
     signatureHash = this.tx.hashForSignature(vin, input.signScript, hashType)
